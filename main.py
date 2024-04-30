@@ -289,21 +289,17 @@ class SQLHandler(object):
     if method == "ADD":
         query_template: str = f"ALTER TABLE {table} {method} {column.column_name} {column.column_constraint} {column.column_constraint}"
         if len(records):
-            
-  def execute_add_records(self, table: SQLHTable, column_dict:dict):
-    column = column_dict["column_object"]
-    records = column_dict["records"]
-    primary_key = table.get_primary_key()
-    if primary_key:
-        primary_key_records = table.get_records_by_column()
+            primary_key = table.get_primary_key()
+            if primary_key:
+                primary_key_records = table.get_records_by_column()
 
-    for index, record in enumerate(records):
-       update_template = {
-        "column_object":column,
-        "value":record
-        "condition":[table.get_primary_key().column_name, ]
-        }
-        self.execute_update_table(table = table, )
+            for index, record in enumerate(records):
+               update_template = {
+                "column_object":column,
+                "value":record
+                "condition":[table.get_primary_key().column_name, index + 1]
+                }
+                self.execute_update_table(table = table, update_template=update_template)
 
   def execute_update_table(self, table:SQLHTable, update_template:dict=dict(), condition_query:str = None):
     #update_template = {
@@ -378,6 +374,7 @@ class SQLHDatebase(SQLHandler):
         return super().execute_select(table.table_name, columns_select=columns_select)
     else:
       return False
+
 
   def _add_column(self, table:SQHLTable|str, column:SQLHColumn, records:list):
     arg_table = None
