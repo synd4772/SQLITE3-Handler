@@ -30,7 +30,6 @@ class SQLHTable(object):
         self.datebase_object._add_column(table = self, column=column, records=records)
       return self.columns
     else:
-
       return False
 
   def set_primary_key(self, column:SQLHColumn):
@@ -133,6 +132,14 @@ class SQLHTable(object):
 
   def __len__(self):
     return self.count_records()
+
+  def get_records_by_column(self, column:SQLHColumn):
+    if isinstance(column, SQLHColumn):
+        if column in self.columns:
+            for row in enumerate(self.records):
+                if column is row["column_object"]:
+                    return row["records"]
+    return False
 class SQLHColumn(object):
 
   def __init__(self, column_name:str, table:SQLHTable = None, column_type:str = 'TEXT', column_constraint:str = '', primary_key:bool = False, autoincrement: bool = False, foreign_key:SQLHColumn = None):
@@ -275,9 +282,44 @@ class SQLHandler(object):
     
     return self.execute_query(query_template)
 
-  def execute_alter_table(self, table:str, column: SQLHColumn, records:list, method:str = 'ADD'):
-    query_template: str = f"ALTER TABLE {table} {method} {column.column_name} {column.column_constraint} {column.column_constraint}"
+  def execute_alter_table(self, table:SQLHTable, method:str = 'ADD'):
+    column:SQLHColumn = column_dict["column_object"]
+    records:list = column_dict["records"]
 
+    if method == "ADD":
+        query_template: str = f"ALTER TABLE {table} {method} {column.column_name} {column.column_constraint} {column.column_constraint}"
+        if len(records):
+            
+  def execute_add_records(self, table: SQLHTable, column_dict:dict):
+    column = column_dict["column_object"]
+    records = column_dict["records"]
+    primary_key = table.get_primary_key()
+    if primary_key:
+        primary_key_records = table.get_records_by_column()
+
+    for index, record in enumerate(records):
+       update_template = {
+        "column_object":column,
+        "value":record
+        "condition":[table.get_primary_key().column_name, ]
+        }
+        self.execute_update_table(table = table, )
+
+  def execute_update_table(self, table:SQLHTable, update_template:dict=dict(), condition_query:str = None):
+    #update_template = {
+    #    "column_object":column,
+    #    "value":"some value",
+    #    "condition":["id", 4]
+    #}
+    condition = update_template['condition']
+    value = update_template['value']
+
+    query_template = f"UPDATE {table.table_name} SET {update_template["column_object"].column_name} = {value}"
+    if len(condition):
+        query_template += f" WHERE {condition[0]} like {condition[1]}"
+    elif condition_query:
+        query_template += f" WHERE {condition_query}"
+    execute_query(query_template)
 
 class SQLHDatebase(SQLHandler):
   def __init__(self, connection: Connection = None, datebase_name:str = None, tables:list = None):
@@ -337,10 +379,16 @@ class SQLHDatebase(SQLHandler):
     else:
       return False
 
-  def _add_column(self, table:str|SQHLTable, column:SQLHColumn, records:list):
-
-    pass
-
+  def _add_column(self, table:SQHLTable|str, column:SQLHColumn, records:list):
+    arg_table = None
+    if isinstance(table, str):
+        arg_table: SQLHTable = self.find_table(table = table)
+    elif isinstance(table, SQLHTable):
+        arg_table: SQLHTable= table.table_name
+    arg_dict: dict = {"column_object":column, "records":records}
+    super().execute_alter_table(table = arg_table, method = "ADD")
+    super().execute_add_records(table = table, column_dict = arg_dict)
+  
 
 datebase = SQLHDatebase(datebase_name='data.db')
 users_table = SQLHTable(table_name="users")
