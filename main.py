@@ -52,18 +52,23 @@ class SQLHDatabase(SQLHandler):
 
   def check_for_tables(self):
     tables = self.execute_query("SELECT name FROM sqlite_master WHERE type='table'")
-    
     if len(tables):
-      print("Tables:")
       for table in tables:
         dict_template = {"table_object":None, "columns":[]}
         table_object = SQLHTable(name = table, row_id=True)
         dict_template["table_object"] = table_object
-        
-        print(table[0])
+        temp_columns = list()
         columns = self.execute_query(f"PRAGMA table_info({table[0]})")
-      
-        print(columns)
+        print(self.execute_query(f"PRAGMA foreign_key_list({table[0]})"))
+        for column in columns:
+          column_object = SQLHColumn(name=column[1], type=column[2], constraint='NOT NULL' if column[3] == 1 else '', primary_key=True if column[5] == 1 else False, foreign_key=False)
+          temp_columns.append(column_object)
+        #короче продолжить тему, типо нежно абсолютно все узнать там о таблицах, выписать данные в классы, и потому туда сюда гг наввкрх
+        #еще проблемс есть одна, заключается в том, что нужно подумать как связывать вторичные ключи, есть варик для начала все создать, а потом сделать проверку
+        #на вторичные ключи и типо если есть то уже тогда связывать все темы , но тут еще нужно учесть чтобы не сломать систему базы данных, а то как то не очень будет.
+        #короче подумать стоит ли выключать live атребут для класса table при создании класса и т.д
+        
+
 
   def add_table(self, table:SQLHTable):
     self.tables.append(table)
