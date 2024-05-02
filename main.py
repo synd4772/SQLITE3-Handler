@@ -2,7 +2,7 @@ from __future__ import annotations
 from sqlite3 import *
 from sqlite3 import Error, Connection
 from os import *
-
+count = 0
 
 def object_check(func):
   def wrapper(*args, **kwargs):
@@ -11,52 +11,96 @@ def object_check(func):
   return wrapper
 
 class SQLHandler(object):
-  def __init__(file_name:str = 'data.db'):
+  def __init__(self, file_name:str = 'data.db'):
     self.connection = self.create_connection(file_name)
 
   def create_connection(self, file_name:str):
     connection = None
     try:
-        connection = connect(path)
+        connection = connect(file_name)
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA foreign_keys = ON;")
+
         return connection
     except Error as e:
         print(f"Error: {e}")
 
+
   def execute_query(self, query):
+    global count
+    count += 1
+    print()
+    print('query number', count)
+    print(query)
+    print()
     cursor = self.connection.cursor()
     result = None
     try:
         cursor.execute(query)
-        cursor.commit()
         result = cursor.fetchall()
+        self.connection.commit()
         return result
     except Error as e:
         print(f"Error: {e}")
   
 class SQLHDatabase(SQLHandler):
-  def __init__(self, file_name:str = 'data.db'):
-    super().__init__(file_name = file_name)
-    self.tables = None
+  def __init__(self, name:str = 'data.db'):
+    super().__init__(name)
+    self.tables = list()
+    self.tables_dict = list()
+    self.check_for_tables()
+
+  def check_for_tables(self):
+    tables = self.execute_query("SELECT name FROM sqlite_master WHERE type='table'")
+    
+    if len(tables):
+      print("Tables:")
+      for table in tables:
+        dict_template = {"table_object":None, "columns":[]}
+        table_object = SQLHTable(name = table, row_id=True)
+        dict_template["table_object"] = table_object
+        
+        print(table[0])
+        columns = self.execute_query(f"PRAGMA table_info({table[0]})")
+      
+        print(columns)
 
   def add_table(self, table:SQLHTable):
+    self.tables.append(table)
+    table.set_database(self)
     query_template = f"CREATE TABLE IF NOT EXISTS {table.name}("
     columns = table.get_columns()
     columns_template_strings = list()
+    temp_str = list()
+    foreign_keys_list = list()
     for column in columns:
       temp_str.append(f"{column.name} {column.type}{' PRIMARY KEY' if column.primary_key else ""} {column.constraint}")
-    columns_template_strings = ",".join(columns_template_strings)
-    query_template += columns_template_strings + ");"
+      if isinstance(column.foreign_key, SQLHTable) :
+        foreign_keys_list.append(f'FOREIGN KEY({column.name}) REFERENCES {column.table.name}({column.table.primary_key.name})')
+    temp_str.extend(foreign_keys_list)
+    columns_template_strings = ",".join(temp_str)
+    query_template += columns_template_strings
+    
+
+    query_template += ");"
+
     super().execute_query(query_template)
 
-    records = table.get_records()
-    if records is not None:
-      for index, record in enumerate(records):
+    primary_key = table.primary_key
+    primary_key_records = primary_key.get_records()
+    if table.get_records_count():
+      for i in range(1, table.get_records_count() + 1):
         tmp_list = list()
-        for second_record in records:
-          tmp_list.append(second_record[index])
-        self.insert_table(table, tmp_list)
+        for column_dict in table.columns:
+          tmp_list.append(column_dict['records'][i - 1])
+        self.insert_table(table = table, records = tmp_list)
       
   def insert_table(self, table:SQLHTable, records):
+    records = records
+    tmp_records = list()
+    for record in records:
+      tmp_records.append(f"'{str(record)}'" if not str(record).isdigit() and record != 'NULL' else f"{record}")
+    records = tmp_records
     if table in self.tables:
       columns = table.get_columns()
       columns_names = [column.name for column in columns]
@@ -85,6 +129,17 @@ class SQLHDatabase(SQLHandler):
           condition = [column.name, column_record, table_primary_key, primary_key_records[index]]
           self.change_record_table(table=table, condition=condition)
 
+  def find_table(self, table:str|SQLHTable):
+    if self.tables is not None:
+      for l_table in self.tables:
+        if isinstance(table, str):
+          if l_table.name == table:
+            return l_table
+        elif isinstance(table, SQLHTable):
+          if l_table is table:
+            return l_table
+      return None
+
 
 class SQLHTable(object):
   def __init__(self, name:str, row_id:bool):
@@ -93,35 +148,114 @@ class SQLHTable(object):
     self.primary_key = None
     self.live = False
     self.database_object:SQLHDatabase = None
-    self.row_id = SQLHColumn(name="id", type="INTEGER", constraint="NOT NULL", primary_key=True) if row_id else None
+    self.row_id = SQLHColumn(name="id", type="INTEGER", constraint="NOT NULL", primary_key=True, foreign_key=None) if row_id else None
+    if row_id:
+      self.primary_key = self.row_id
+      self.add_column(self.row_id) 
 
-  def add_column(self, column:SQLHColumn, records:list):
-    primary_key_dict = self.get_column_dict(self.primary_key)
-    primary_key_records = primary_key_dict['records']
-    self.columns.append({"column_object":column, "records":[(records[index] if len(records) >= len(primary_key_records) else 'NULL') for index, record in enumerate(primary_key_records)]})
-    if self.live and self.database_object is not None:
-      self.database_object.column_append(self, column)
+  def add_column(self, column:SQLHColumn):
+    support_column_records = []
+    if len(self.columns):
+      support_column_records = self.columns[0]["records"]
+
+    if column.primary_key and self.primary_key is not None:
+      self.primary_key = column
+    self.columns.append({"column_object":column, "records":['NULL' for _ in support_column_records]})
+
+    column.set_table(self)
+
+    if self.live and self.database_object:
+      self.database_object.alter_table(table=self, column=column, method='ADD')
+
+  def add_column_records(self, column:SQLHColumn, records:list):
+    if len(self.get_records()[0]):
+      records = records
+      support_column = None
+      support_column_records = None
+      if self.primary_key:
+        support_column = self.primary_key
+        support_column_records = self.get_column_dict(support_column)["records"]
+      else:
+        support_column = self.columns[0]["column_object"]
+        support_column_records = self.columns[0]["records"]
+      if len(records) < len(support_column_records):
+        for _ in range(len(support_column_records) - len(records)):
+          records.append("NULL")
+
+      column_dict = self.get_column_dict(column=column)
+
+      for index, record in enumerate(column_dict["records"]):
+        column_dict["records"][index] = records[index]
+
+      if self.live and self.database_object:
+        for index, record in enumerate(column_dict["records"]):
+          self.database_object.change_record_table(table = self.name, condition=[column.name, record, support_column.name, support_column_records[index]])
+      
+      return True
+    else:
+      return False
+
+  def add_special_record(self, column, record, index:int = None, condition:list = None):
+    """condition = [by_column, by_value]"""
+    if self.get_column_dict(column) is not None and len(self.get_records()):
+      
+      column_dict = self.get_column_dict(column)
+      column_records = column_dict["records"]
+      support_index = index
+      support_column = None
+      support_value = None
+      if support_index is None:
+        support_column = condition[0]
+        support_value = condition[1]
+        support_column_dict = self.get_column_dict(support_column)
+        try:
+          support_index = support_column_dict["records"].index(support_value)
+        except:
+          print("Value was not found")
+          return False
+      column_records[support_index] = record
+      if self.live and self.database_object:
+        self.database_object.change_record_table(table = self, condition = [column.name, record, support_column, support_value])
+    else:
+      return False
 
   def __null_row_add(self):
     for column_dict in self.columns:
       records = column_dict["records"]
-      records.append(("NULL" if self.row_id is not column_dict["column_object"] else self.get_records_count + 1))
+      records.append(("NULL" if self.row_id is not column_dict["column_object"] else self.get_records_count() + 1))
 
   def add_record(self, records:list):
     primary_key_records = self.get_column_dict(self.primary_key)["records"] 
     self.__null_row_add()
-    for column_dict in self.columns:
-      if column_dict['records'][len()]
+    records = records
+    if self.row_id:
+      records.insert(0, 'none')
+    for index, column_dict in enumerate(self.columns):
+      last_record = column_dict['records'][-1]
+      
+      if last_record == 'NULL' and len(records):
+        column_dict['records'][-1] = records[index]
+
+    if self.live:
+      arg_records = list()
+      for column_dict in self.columns:
+        arg_records.append(column_dict["records"][-1])
+      insert_table(table = self, records = arg_records)
+      # self.database_object.add_record(self, arg_records)
+
+  def set_database(self, database_object:SQLHDatabase):
+    if isinstance(database_object, SQLHDatabase):
+      self.live = True
+      self.database_object = database_object
+      return True
+    return False
 
   @staticmethod
   def __get_something(arg_list:list, key:str):
-    if len(arg_list) > 1:
-          return_list:list = []
-          for item in arg_list:
-            return_list.append(item[key])
-          return return_list
-    else:
-      return None
+    return_list:list = []
+    for item in arg_list:
+      return_list.append(item[key])
+    return return_list
 
   def get_records(self):
     return self.__get_something(arg_list=self.columns, key="records")
@@ -130,30 +264,73 @@ class SQLHTable(object):
     return self.__get_something(arg_list=self.columns, key="column_object")
 
   def get_column_dict(self, column:SQLHColumn):
-    if column in self.get_columns():
-      for column_dict in self.columns:
-        if column_dict["column_object"] is column:
-          return column_dict
+    if len(self.get_columns()):
+      if column in self.get_columns(): # сделать проверку на то, есть ли вообще записи, если нету то уже нужно придумать что-то
+        for column_dict in self.columns:
+          if column_dict["column_object"] is column:
+            return column_dict
     return None
+    
 
   def get_records_count(self):
-    primary_key_records = self.get_column_dict(self.primary_key)["records"]
-    
-    return len(primary_key_records)
+    if self.primary_key and len(self.get_column_dict(self.primary_key)["records"]):
+      primary_key_records = self.get_column_dict(self.primary_key)["records"]
+      return len(primary_key_records)
+    elif len(self.get_records()) and len(self.get_records()[0]):
+      return len(self.get_records()[0])
+    return 0
 
 class SQLHColumn(object):
-  def __init__(self, name:str, type:str, constraint:str, primary_key:bool, foreign_key:SQLHColumn):
+  def __init__(self, name:str, type:str, constraint:str, primary_key:bool = False, foreign_key:SQLHTable = False):
     self.name = name
     self.type = type
     self.constraint = constraint
     self.primary_key = primary_key
     self.foreign_key = foreign_key
+    self.table = None
+  
+  def set_table(self, table:SQLHTable):
+    self.table = table
+
+  def get_table(self):
+    return self.table
+
+  def get_records(self):
+    if self.table:
+      return self.table.get_column_dict(self)['records']
 
 
+main_dtbs = SQLHDatabase(name="data.db")
 
+def import_table(database_instance:SQLHDatabase):
+  pass
 
+# user_table = SQLHTable(name="users", row_id=True)
+# status_table = SQLHTable(name="status", row_id=True)
+# status_column = SQLHColumn(name="status_", type="TEXT", constraint= "NOT NULL", primary_key=False, foreign_key=False)
+# status_table.add_column(status_column)
+# status_table.add_record(records=["admin"])
+# status_table.add_record(records=["user"])
+# status_table.add_record(records=["artist"])
+# nickname_column = SQLHColumn(name="name", type="TEXT", constraint= "NOT NULL", primary_key=False, foreign_key=False)
+# user_table.add_column(nickname_column)
+# user_table.add_record(records=['John Doe'])
+# user_table.add_record(records=['Jane Doe'])
+# status_column = SQLHColumn(name="status", type="TEXT", constraint= "NOT NULL", primary_key=False, foreign_key=status_table)
+# user_table.add_column(status_column)
+# user_table.add_column_records(status_column, records=[1])
+# user_table.add_special_record(column=status_column, record=2, index=1)
 
+# main_dtbs.add_table(status_table)
+# main_dtbs.add_table(user_table)
 
+# age_column = SQLHColumn(name='age', type="INTEGER", constraint= "")
+# user_table.add_column(age_column)
+# user_table.add_column_records(column=age_column, records=[42,16])
+
+# user_table.set_database(main_dtbs)
+
+# print(main_dtbs.execute_query("SELECT name FROM sqlite_master WHERE type='table'"))
 
 
 
@@ -604,5 +781,4 @@ class SQLHColumn(object):
 
 #ОСНОВНЫЕ ЗАДАЧИ
 
-#1.Доделать классы и запросы
-#2.Сделать ЭКСПОРТ ДАННЫХ из базы данных для дальнейшнего обновления . Возможно хранить все экземпляры в отдельном файле, но можно и через похуизм, а тоесть через классы
+# #1.Доделать классы и запросы
